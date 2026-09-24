@@ -4,14 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-cost-tracker"
-version = "1.0.0"
-description = "Local CLI and Python library for estimating and tracking LLM token usage and cost."
+version = "1.1.0"
+description = "Local CLI and Python library for estimating, filtering, exporting, and tracking LLM token usage and cost."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Radwan Abdulhadi Ahmed"}]
 keywords = ["llm", "cost", "tokens", "budget", "analytics"]
 classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License"]
+
+[project.urls]
+Repository = "https://github.com/rad03i2/llm-cost-tracker"
+Issues = "https://github.com/rad03i2/llm-cost-tracker/issues"
 
 [project.scripts]
 llm-cost = "llm_cost_tracker.cli:main"

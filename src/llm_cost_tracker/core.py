@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,15 @@ def validate_tokens(value: int) -> int:
         raise ValueError("token counts must be non-negative integers")
     return value
 
+def parse_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("timestamp must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
 def estimate_cost(input_tokens: int, output_tokens: int, price: Price) -> Decimal:
     validate_tokens(input_tokens); validate_tokens(output_tokens)
     if price.input_per_million < 0 or price.output_per_million < 0:
@@ -56,10 +66,7 @@ def make_usage(model: str, input_tokens: int, output_tokens: int, price: Price, 
     if not model:
         raise ValueError("model is required")
     ts = timestamp or datetime.now(timezone.utc).isoformat()
-    try:
-        datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("timestamp must be ISO-8601") from exc
+    parse_timestamp(ts)
     return Usage(model, validate_tokens(input_tokens), validate_tokens(output_tokens), estimate_cost(input_tokens, output_tokens, price), ts, label.strip())
 
 def append_usage(path: str | Path, usage: Usage) -> None:
@@ -79,10 +86,39 @@ def load_usage(path: str | Path) -> list[Usage]:
             if not line.strip(): continue
             try:
                 row = json.loads(line)
-                rows.append(Usage(str(row["model"]), int(row["input_tokens"]), int(row["output_tokens"]), parse_money(row["cost_usd"]), str(row["timestamp"]), str(row.get("label", ""))))
+                usage = Usage(str(row["model"]), int(row["input_tokens"]), int(row["output_tokens"]), parse_money(row["cost_usd"]), str(row["timestamp"]), str(row.get("label", "")))
+                if not usage.model.strip(): raise ValueError("model is required")
+                validate_tokens(usage.input_tokens); validate_tokens(usage.output_tokens); parse_timestamp(usage.timestamp)
+                rows.append(usage)
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise ValueError(f"invalid ledger row {line_no}: {exc}") from exc
     return rows
+
+def filter_usage(rows: Iterable[Usage], *, model: str | None = None, label: str | None = None, since: str | None = None, until: str | None = None) -> list[Usage]:
+    start = parse_timestamp(since) if since else None
+    end = parse_timestamp(until) if until else None
+    if start and end and start > end:
+        raise ValueError("--since must not be later than --until")
+    result: list[Usage] = []
+    for row in rows:
+        stamp = parse_timestamp(row.timestamp)
+        if model is not None and row.model != model: continue
+        if label is not None and row.label != label: continue
+        if start is not None and stamp < start: continue
+        if end is not None and stamp > end: continue
+        result.append(row)
+    return result
+
+def export_csv(path: str | Path, rows: Iterable[Usage]) -> int:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    items = list(rows)
+    with target.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["timestamp", "model", "label", "input_tokens", "output_tokens", "cost_usd"])
+        for row in items:
+            writer.writerow([row.timestamp, row.model, row.label, row.input_tokens, row.output_tokens, str(row.cost_usd)])
+    return len(items)
 
 def summarize(rows: Iterable[Usage]) -> dict[str, object]:
     items = list(rows)
@@ -90,6 +126,8 @@ def summarize(rows: Iterable[Usage]) -> dict[str, object]:
     for row in items:
         bucket = by_model.setdefault(row.model, {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": Decimal("0")})
         bucket["requests"] += 1; bucket["input_tokens"] += row.input_tokens; bucket["output_tokens"] += row.output_tokens; bucket["cost_usd"] += row.cost_usd
+    for bucket in by_model.values():
+        bucket["cost_usd"] = bucket["cost_usd"].quantize(MICRO)
     total = sum((r.cost_usd for r in items), Decimal("0"))
     return {"requests": len(items), "input_tokens": sum(r.input_tokens for r in items), "output_tokens": sum(r.output_tokens for r in items), "cost_usd": total.quantize(MICRO), "by_model": by_model}
 
